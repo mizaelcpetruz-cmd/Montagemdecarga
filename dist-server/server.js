@@ -1,11 +1,20 @@
 import express from 'express';
 import helmet from 'helmet';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { ENV } from './config/env.js';
 import { corsMiddleware } from './config/cors.js';
 import { initDatabase } from './config/database.js';
 import { apiRateLimiter, sanitizeInput } from './middlewares/security.js';
 import { errorHandler } from './errors/ErrorHandler.js';
 import apiRoutes from './routes/index.js';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Localiza a pasta dist do frontend compilado
+const distPath = fs.existsSync(path.resolve(process.cwd(), 'dist'))
+    ? path.resolve(process.cwd(), 'dist')
+    : path.resolve(__dirname, '../../dist');
 const app = express();
 // 1. Inicializa banco de dados Supabase PostgreSQL Cloud
 initDatabase().catch((err) => {
@@ -38,18 +47,36 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(sanitizeInput);
 // 6. Rate Limiter Global da API
 app.use('/api', apiRateLimiter);
-// 7. Registro Central de Rotas
+// 7. Registro Central de Rotas de API
 app.use('/api', apiRoutes);
-// 8. Rota raiz e Health check direto
-app.get('/', (req, res) => {
-    res.json({
-        name: 'Petruz Montagem de Carga API',
-        version: '1.0.0',
-        status: 'healthy',
-        documentation: '/api/health',
+// 8. Servir arquivos estáticos do Frontend (React / Vite)
+if (fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+    // SPA Fallback: qualquer requisição de página carrega o index.html
+    app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api')) {
+            return next();
+        }
+        const indexPath = path.join(distPath, 'index.html');
+        if (fs.existsSync(indexPath)) {
+            return res.sendFile(indexPath);
+        }
+        next();
     });
-});
-// 9. Middleware de Rota Não Encontrada (404)
+}
+else {
+    // Rota raiz e Health check caso a pasta dist ainda não tenha sido gerada
+    app.get('/', (req, res) => {
+        res.json({
+            name: 'Petruz Montagem de Carga API',
+            version: '1.0.0',
+            status: 'healthy',
+            message: 'Frontend não compilado. Execute npm run build para gerar os arquivos estáticos.',
+            documentation: '/api/health',
+        });
+    });
+}
+// 9. Middleware de Rota Não Encontrada (404 para requisições de API não atendidas)
 app.use((req, res) => {
     res.status(404).json({
         success: false,
