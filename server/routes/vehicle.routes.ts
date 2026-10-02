@@ -1,0 +1,17 @@
+import { Router } from 'express';
+import { vehicleController } from '../controllers/vehicleController.js';
+import { authenticateToken, requireRole } from '../middlewares/auth.js';
+import { validateRequest } from '../middlewares/validator.js';
+import { vehicleSchema, updateVehicleSchema } from '../validators/vehicle.validator.js';
+
+const router = Router();
+
+router.use(authenticateToken);
+
+router.get('/', vehicleController.list);
+router.get('/:id', vehicleController.getById);
+router.post('/', validateRequest({ body: vehicleSchema }), vehicleController.create);
+router.put('/:id', validateRequest({ body: updateVehicleSchema }), vehicleController.update);
+router.delete('/:id', requireRole(['admin', 'supervisor']), vehicleController.delete);
+
+export default router;
