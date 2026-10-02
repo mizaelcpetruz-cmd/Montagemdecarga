@@ -26,25 +26,25 @@ initDatabase().catch((err) => {
 });
 
 // 2. Middlewares de Segurança de Cabeçalhos HTTP (Helmet)
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' }, // Permite streaming de PDFs no frontend
-    crossOriginEmbedderPolicy: false,
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-        connectSrc: ["'self'", 'http:', 'https:', 'ws:', 'wss:'],
-        frameSrc: ["'self'", 'blob:', 'data:'],
-        objectSrc: ["'self'", 'blob:', 'data:'],
-      },
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      connectSrc: ["'self'", 'http:', 'https:', 'ws:', 'wss:'],
+      frameSrc: ["'self'", 'blob:', 'data:'],
+      objectSrc: ["'self'", 'blob:', 'data:'],
+      upgradeInsecureRequests: null, // Desabilita a conversão forçada de HTTP para HTTPS
     },
-    referrerPolicy: { policy: 'no-referrer-when-downgrade' },
-    xContentTypeOptions: true,
-  })
-);
+  },
+  referrerPolicy: { policy: 'no-referrer-when-downgrade' },
+  xContentTypeOptions: true,
+}));
 
 // 3. Middleware de CORS Estrito
 app.use(corsMiddleware);

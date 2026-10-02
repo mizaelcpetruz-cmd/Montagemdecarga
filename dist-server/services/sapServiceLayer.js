@@ -148,7 +148,7 @@ class SapServiceLayer {
         }
     }
     /**
-     * Consulta a lista de Vendedores (/SalesPersons) no SAP Service Layer e mantém cache em memória
+     * Consulta a lista completa de Vendedores (/SalesPersons) no SAP Service Layer paginada e mantém cache em memória
      */
     async getSalesPersonsMap() {
         if (this.isMockMode) {
@@ -162,40 +162,101 @@ class SapServiceLayer {
             if (!this.sessionCookie) {
                 await this.login();
             }
-            let list = [];
-            try {
-                const response = await this.client.get('/SalesPersons', {
-                    headers: { Cookie: this.sessionCookie || '' },
-                    params: {
-                        $select: 'SalesEmployeeCode,SalesEmployeeName',
-                        $top: 500,
-                    },
-                });
-                list = response.data?.value || [];
-            }
-            catch {
-                // Fallback sem $select caso varie no schema da versão SAP
-                const fallbackRes = await this.client.get('/SalesPersons', {
-                    headers: { Cookie: this.sessionCookie || '' },
-                });
-                list = fallbackRes.data?.value || [];
-            }
             const map = new Map();
-            for (const sp of list) {
-                const code = sp.SalesEmployeeCode ?? sp.SlpCode ?? sp.Code ?? sp.SalesPersonCode;
-                const name = sp.SalesEmployeeName ?? sp.SlpName ?? sp.Name ?? sp.SalesPersonName ?? '';
-                if (code !== undefined) {
-                    map.set(Number(code), String(name || `Vendedor #${code}`));
+            let nextUrl = '/SalesPersons';
+            let page = 0;
+            while (nextUrl && page < 30) {
+                page++;
+                try {
+                    const response = await this.client.get(nextUrl, {
+                        headers: { Cookie: this.sessionCookie || '' },
+                    });
+                    const items = response.data?.value || [];
+                    for (const sp of items) {
+                        const code = sp.SalesEmployeeCode ?? sp.SlpCode ?? sp.Code ?? sp.SalesPersonCode;
+                        const name = sp.SalesEmployeeName ?? sp.SlpName ?? sp.Name ?? sp.SalesPersonName;
+                        if (code !== undefined && code !== null) {
+                            const numCode = Number(code);
+                            if (numCode > 0 && name && String(name).trim() && String(name).trim() !== '-Nenhum vendedor / comprador-') {
+                                map.set(numCode, String(name).trim());
+                            }
+                        }
+                    }
+                    const rawNext = response.data?.['odata.nextLink'] || response.data?.['@odata.nextLink'];
+                    if (rawNext) {
+                        if (rawNext.startsWith('http')) {
+                            try {
+                                const parsedUrl = new URL(rawNext);
+                                nextUrl = parsedUrl.pathname.replace(/^\/b1s\/v\d/, '') + parsedUrl.search;
+                            }
+                            catch {
+                                nextUrl = rawNext;
+                            }
+                        }
+                        else {
+                            nextUrl = rawNext.startsWith('/') ? rawNext : `/${rawNext}`;
+                        }
+                    }
+                    else {
+                        nextUrl = null;
+                    }
+                }
+                catch (reqErr) {
+                    if (reqErr.response?.status === 401 && page === 1) {
+                        console.warn('⚠️ Sessão expirada em /SalesPersons, reautenticando...');
+                        await this.login();
+                        continue;
+                    }
+                    console.warn('⚠️ Falha ao consultar página de /SalesPersons no SAP:', reqErr.message);
+                    break;
                 }
             }
-            this.salesPersonsCache = map;
-            this.salesPersonsCacheExpires = now + 10 * 60 * 1000; // 10 min cache
-            return map;
+            if (map.size > 0) {
+                this.salesPersonsCache = map;
+                this.salesPersonsCacheExpires = now + 15 * 60 * 1000; // 15 min cache
+                console.log(`✅ SAP /SalesPersons: ${map.size} vendedores sincronizados.`);
+            }
+            return this.salesPersonsCache;
         }
         catch (err) {
             console.warn('⚠️ Não foi possível consultar /SalesPersons no SAP:', err.message);
             return this.salesPersonsCache;
         }
+    }
+    /**
+     * Busca o nome do vendedor por ID, consultando cache ou direto no SAP se necessário
+     */
+    async getSalesPersonName(code) {
+        if (code === undefined || code === null)
+            return '';
+        const numCode = Number(code);
+        if (isNaN(numCode) || numCode <= 0)
+            return '';
+        if (this.salesPersonsCache.has(numCode)) {
+            return this.salesPersonsCache.get(numCode) || '';
+        }
+        const map = await this.getSalesPersonsMap();
+        if (map.has(numCode)) {
+            return map.get(numCode) || '';
+        }
+        try {
+            if (!this.sessionCookie) {
+                await this.login();
+            }
+            const res = await this.client.get(`/SalesPersons(${numCode})`, {
+                headers: { Cookie: this.sessionCookie || '' },
+            });
+            const name = res.data?.SalesEmployeeName ?? res.data?.SlpName ?? res.data?.Name;
+            if (name && String(name).trim() && String(name).trim() !== '-Nenhum vendedor / comprador-') {
+                const cleanName = String(name).trim();
+                this.salesPersonsCache.set(numCode, cleanName);
+                return cleanName;
+            }
+        }
+        catch (err) {
+            console.warn(`⚠️ Não foi possível consultar Vendedor #${numCode} no SAP:`, err.message);
+        }
+        return '';
     }
     /**
      * Consulta as listas de picking ativas/liberadas no SAP Service Layer (/PickLists)
@@ -431,8 +492,14 @@ class SapServiceLayer {
                 });
                 const pallets = Math.max(1, Math.ceil(totalWeight / 1000));
                 const rawSpCode = o.SalesPersonCode ?? o.SlpCode ?? o.SalesEmployeeCode;
-                const spCode = rawSpCode !== undefined && rawSpCode !== -1 && rawSpCode !== '-1' ? Number(rawSpCode) : undefined;
-                const spName = spCode !== undefined ? (salesPersonsMap.get(spCode) || o.SalesPersonName || `Vendedor #${spCode}`) : (o.SalesPersonName || '');
+                const spCode = rawSpCode !== undefined && rawSpCode !== null && Number(rawSpCode) > 0 ? Number(rawSpCode) : undefined;
+                let spName = '';
+                if (spCode !== undefined) {
+                    spName = salesPersonsMap.get(spCode) || (o.SalesPersonName && !o.SalesPersonName.startsWith('Vendedor #') ? o.SalesPersonName : '');
+                }
+                else if (o.SalesPersonName && !o.SalesPersonName.startsWith('Vendedor #')) {
+                    spName = o.SalesPersonName;
+                }
                 openOrdersWithoutInvoice.push({
                     DocEntry: o.DocEntry,
                     DocNum: o.DocNum,
@@ -517,8 +584,14 @@ class SapServiceLayer {
             if (!o)
                 return null;
             const rawSpCode = o.SalesPersonCode ?? o.SlpCode ?? o.SalesEmployeeCode;
-            const spCode = rawSpCode !== undefined && rawSpCode !== -1 && rawSpCode !== '-1' ? Number(rawSpCode) : undefined;
-            const spName = spCode !== undefined ? (salesPersonsMap.get(spCode) || o.SalesPersonName || `Vendedor #${spCode}`) : (o.SalesPersonName || '');
+            const spCode = rawSpCode !== undefined && rawSpCode !== null && Number(rawSpCode) > 0 ? Number(rawSpCode) : undefined;
+            let spName = '';
+            if (spCode !== undefined) {
+                spName = salesPersonsMap.get(spCode) || (o.SalesPersonName && !o.SalesPersonName.startsWith('Vendedor #') ? o.SalesPersonName : '');
+            }
+            else if (o.SalesPersonName && !o.SalesPersonName.startsWith('Vendedor #')) {
+                spName = o.SalesPersonName;
+            }
             let totalWeight = 0;
             let totalVolume = 0;
             const lines = (o.DocumentLines || []).map((line) => {
